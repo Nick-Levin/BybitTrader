@@ -14,7 +14,7 @@
   <a href="#key-features">Features</a> •
   <a href="#quick-start">Quick Start</a> •
   <a href="#performance-projections">Performance</a> •
-  <a href="#documentation">Documentation</a>
+  <a href="#documentation">Documentation</a> •
 </p>
 
 ---
@@ -336,8 +336,7 @@ BybitTrader/
 ├── LICENSE                      # MIT License
 │
 ├── config/                      # Configuration files
-│   ├── strategies.yaml          # Engine parameters
-│   └── risk_limits.yaml         # Circuit breaker settings
+│   └── strategies.yaml          # Engine parameters
 │
 ├── src/                         # Source code
 │   ├── core/                    # Core components
@@ -350,21 +349,14 @@ BybitTrader/
 │   │
 │   ├── strategies/              # Trading strategies (Four Engines)
 │   │   ├── base.py              # Base strategy class
-│   │   ├── core_hodl.py         # CORE-HODL engine
-│   │   ├── trend_following.py   # TREND engine
-│   │   ├── funding_arbitrage.py # FUNDING engine
-│   │   └── tactical.py          # TACTICAL engine
+│   │   ├── dca_strategy.py      # DCA strategy implementation
+│   │   └── grid_strategy.py     # Grid trading strategy
 │   │
 │   ├── risk/                    # Risk management
-│   │   ├── risk_manager.py      # Portfolio risk monitoring
-│   │   ├── position_sizing.py   # Kelly criterion sizing
-│   │   └── circuit_breakers.py  # Four-level circuit breakers
+│   │   └── risk_manager.py      # Portfolio risk monitoring
 │   │
 │   ├── storage/                 # Data persistence
 │   │   └── database.py          # SQLite/PostgreSQL interface
-│   │
-│   ├── notifications/           # Alert systems
-│   │   └── telegram.py          # Telegram bot integration
 │   │
 │   └── utils/                   # Utilities
 │       └── logging_config.py    # Structured logging
