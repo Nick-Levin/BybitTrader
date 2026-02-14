@@ -146,7 +146,7 @@ Mathematically impossible to suffer ruin. Provides 90% reduction in drawdowns vs
 
 ```bash
 # Clone the repository
-git clone <repository-url>
+git clone https://github.com/Nick-Levin/BybitTrader.git
 cd BybitTrader
 
 # Create virtual environment
