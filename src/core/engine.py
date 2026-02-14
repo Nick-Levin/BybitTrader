@@ -463,23 +463,42 @@ class TradingEngine:
         engine_allocation = self.portfolio.total_balance * self.ALLOCATION[engine_type]
         risk_per_trade = Decimal(str(engine_config.position_sizing.max_risk_per_trade))
         
-        quantity = self.risk_manager.calculate_position_size(
-            portfolio=self.portfolio,
-            entry_price=current_price,
-            stop_loss_price=stop_loss,
-            risk_pct=risk_per_trade,
-            strategy_type=engine_type.value.lower().replace("_", "")
-        )
+        # For CORE-HODL (DCA strategy), use the DCA amount from signal metadata
+        if engine_type == EngineType.CORE_HODL and signal.metadata and 'amount_usdt' in signal.metadata:
+            dca_amount_usdt = Decimal(str(signal.metadata['amount_usdt']))
+            quantity = dca_amount_usdt / current_price
+            logger.info("trading_engine.dca_amount", engine=engine_type.value, symbol=symbol, 
+                       amount_usdt=str(dca_amount_usdt), price=str(current_price), 
+                       quantity=str(quantity), order_value=str(quantity * current_price))
+        else:
+            quantity = self.risk_manager.calculate_position_size(
+                portfolio=self.portfolio,
+                entry_price=current_price,
+                stop_loss_price=stop_loss,
+                risk_pct=risk_per_trade,
+                strategy_type=engine_type.value.lower().replace("_", "")
+            )
         
         # Adjust for max position size
-        max_position_value = engine_allocation * Decimal(str(engine_config.position_sizing.max_position_pct)) / 100
+        # max_position_pct is already stored as a decimal (e.g., 0.05 = 5%)
+        max_position_value = engine_allocation * Decimal(str(engine_config.position_sizing.max_position_pct))
         max_quantity = (max_position_value * max_leverage) / current_price
+        original_quantity = quantity
         quantity = min(quantity, max_quantity)
+        
+        if quantity < original_quantity:
+            logger.warning("trading_engine.quantity_capped_by_max_position", 
+                         engine=engine_type.value, symbol=symbol,
+                         original=str(original_quantity), capped=str(quantity),
+                         max_position_value=str(max_position_value))
         
         # Risk check adjusted size
         risk_check_max_size = getattr(risk_check, 'max_position_size', None)
         if risk_check_max_size and isinstance(risk_check_max_size, Decimal):
             quantity = min(quantity, risk_check_max_size)
+            logger.info("trading_engine.quantity_adjusted_by_risk_check", 
+                       engine=engine_type.value, symbol=symbol,
+                       risk_check_max=str(risk_check_max_size), final_quantity=str(quantity))
         
         if quantity <= 0:
             logger.warning("trading_engine.zero_quantity", 
@@ -491,8 +510,12 @@ class TradingEngine:
             current_price, "long"
         )
         
+        # Get subaccount for this engine
+        subaccount = self.ENGINE_TO_SUBACCOUNT.get(engine_type, SubAccountType.CORE_HODL).value
+        
         # Create order
         order = await self.exchange.create_order(
+            subaccount=subaccount,
             symbol=symbol,
             side=OrderSide.BUY,
             order_type=OrderType.MARKET,
@@ -576,8 +599,12 @@ class TradingEngine:
                          engine=engine_type.value, symbol=symbol)
             return
         
+        # Get subaccount for this engine
+        subaccount = self.ENGINE_TO_SUBACCOUNT.get(engine_type, SubAccountType.CORE_HODL).value
+        
         # Create sell order
         order = await self.exchange.create_order(
+            subaccount=subaccount,
             symbol=symbol,
             side=OrderSide.SELL,
             order_type=OrderType.MARKET,
@@ -640,8 +667,12 @@ class TradingEngine:
         # Determine close side
         close_side = OrderSide.SELL if position.side == PositionSide.LONG else OrderSide.BUY
         
+        # Get subaccount for this engine
+        subaccount = self.ENGINE_TO_SUBACCOUNT.get(engine_type, SubAccountType.CORE_HODL).value
+        
         # Create close order
         order = await self.exchange.create_order(
+            subaccount=subaccount,
             symbol=symbol,
             side=close_side,
             order_type=OrderType.MARKET,
@@ -702,10 +733,14 @@ class TradingEngine:
             ticker = await self.exchange.get_ticker(symbol)
             price = Decimal(str(ticker['last']))
             
+            # Get subaccount for this engine
+            subaccount = self.ENGINE_TO_SUBACCOUNT.get(engine_type, SubAccountType.CORE_HODL).value
+            
             if diff > 0:
                 # Need to buy
                 amount = diff / price
                 order = await self.exchange.create_order(
+                    subaccount=subaccount,
                     symbol=symbol,
                     side=OrderSide.BUY,
                     order_type=OrderType.MARKET,
@@ -717,6 +752,7 @@ class TradingEngine:
                 # Need to sell
                 amount = abs(diff) / price
                 order = await self.exchange.create_order(
+                    subaccount=subaccount,
                     symbol=symbol,
                     side=OrderSide.SELL,
                     order_type=OrderType.MARKET,
@@ -744,10 +780,14 @@ class TradingEngine:
         """Check and update status of pending orders."""
         for order_id, order in list(self.pending_orders.items()):
             try:
+                # Get subaccount from order metadata
+                subaccount = order.metadata.get('subaccount', 'CORE_HODL')
+                
                 # Get current status from exchange
                 status = await self.exchange.get_order_status(
-                    order.exchange_order_id or order.id,
-                    order.symbol
+                    subaccount=subaccount,
+                    order_id=order.exchange_order_id or order.id,
+                    symbol=order.symbol
                 )
                 
                 if status != order.status:

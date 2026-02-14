@@ -46,8 +46,11 @@ help: ## Show all available commands
 	@echo "$(GREEN)Trading - Paper Mode (Safe):$(NC)"
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | grep -E 'run-paper|run-.*-paper' | awk 'BEGIN {FS = ":.*?## "}; {printf "  $(GREEN)%-20s$(NC) %s\n", $$1, $$2}'
 	@echo ""
-	@echo "$(YELLOW)Trading - Live Mode (CAUTION!):$(NC)"
-	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | grep -E 'run-live|run-.*-live' | awk 'BEGIN {FS = ":.*?## "}; {printf "  $(YELLOW)%-20s$(NC) %s\n", $$1, $$2}'
+	@echo "$(YELLOW)Trading - Demo Live (Real orders, fake money):$(NC)"
+	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | grep -E 'run-demo-live|run-demo-' | awk 'BEGIN {FS = ":.*?## "}; {printf "  $(YELLOW)%-20s$(NC) %s\n", $$1, $$2}'
+	@echo ""
+	@echo "$(RED)Trading - Real Live Mode (CAUTION! Real Money!):$(NC)"
+	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | grep -E 'run-live|run-.*-live' | grep -v 'demo' | awk 'BEGIN {FS = ":.*?## "}; {printf "  $(RED)%-20s$(NC) %s\n", $$1, $$2}'
 
 # ------------------------------------------------------------------------------
 # Setup
@@ -203,30 +206,65 @@ run-tactical: verify-paper ## Run only TACTICAL engine (paper mode)
 	$(PYTHON_VENV) main.py --mode paper --engine tactical
 
 # ------------------------------------------------------------------------------
-# Trading - Live Mode (CAUTION!)
+# Trading - Live Mode with DEMO Account (Real orders on Bybit Demo)
 # ------------------------------------------------------------------------------
-run-live: verify-live ## Run in live trading mode (CAUTION!)
-	@echo "$(RED)╔══════════════════════════════════════════════════════════════╗$(NC)"
-	@echo "$(RED)║  LIVE MODE ACTIVATED                                         ║$(NC)"
-	@echo "$(RED)║  All four engines will start with real capital               ║$(NC)"
-	@echo "$(RED)╚══════════════════════════════════════════════════════════════╝$(NC)"
+run-demo-live: ## Run LIVE trading with DEMO account (real orders, fake money)
+	@echo "$(YELLOW)╔══════════════════════════════════════════════════════════════╗$(NC)"
+	@echo "$(YELLOW)║  DEMO LIVE MODE                                              ║$(NC)"
+	@echo "$(YELLOW)║  Real orders will be sent to Bybit DEMO trading              ║$(NC)"
+	@echo "$(YELLOW)║  Uses fake money (~163k USDT demo funds)                     ║$(NC)"
+	@echo "$(YELLOW)╚══════════════════════════════════════════════════════════════╝$(NC)"
+	@read -p "Type 'DEMO' to confirm live trading on DEMO account: " confirm; \
+	if [ "$$confirm" != "DEMO" ]; then \
+		echo "$(YELLOW)Aborted. Expected 'DEMO', got '$$confirm'$(NC)"; \
+		exit 1; \
+	fi
 	$(PYTHON_VENV) main.py --mode live
 
-run-core-live: verify-live ## Run only CORE-HODL engine (live)
-	@echo "$(RED)Starting CORE-HODL engine in LIVE mode...$(NC)"
+run-demo-core: ## Run CORE-HODL only (live on DEMO account)
+	@echo "$(YELLOW)Starting CORE-HODL on DEMO account (live orders)...$(NC)"
+	@read -p "Type 'DEMO' to confirm: " confirm; \
+	if [ "$$confirm" != "DEMO" ]; then \
+		echo "$(YELLOW)Aborted.$(NC)"; \
+		exit 1; \
+	fi
 	$(PYTHON_VENV) main.py --mode live --engine core
 
-run-trend-live: verify-live ## Run only TREND engine (live)
-	@echo "$(RED)Starting TREND engine in LIVE mode...$(NC)"
-	$(PYTHON_VENV) main.py --mode live --engine trend
-
-run-funding-live: verify-live ## Run only FUNDING engine (live)
-	@echo "$(RED)Starting FUNDING engine in LIVE mode...$(NC)"
-	$(PYTHON_VENV) main.py --mode live --engine funding
-
-run-tactical-live: verify-live ## Run only TACTICAL engine (live)
-	@echo "$(RED)Starting TACTICAL engine in LIVE mode...$(NC)"
+run-demo-tactical: ## Run TACTICAL only (live on DEMO account)
+	@echo "$(YELLOW)Starting TACTICAL on DEMO account (live orders)...$(NC)"
+	@read -p "Type 'DEMO' to confirm: " confirm; \
+	if [ "$$confirm" != "DEMO" ]; then \
+		echo "$(YELLOW)Aborted.$(NC)"; \
+		exit 1; \
+	fi
 	$(PYTHON_VENV) main.py --mode live --engine tactical
+
+# ------------------------------------------------------------------------------
+# Trading - Live Mode with REAL Account (CAUTION! Real Money!)
+# ------------------------------------------------------------------------------
+run-live: verify-live ## Run in live trading mode with REAL account (CAUTION!)
+	@echo "$(RED)╔══════════════════════════════════════════════════════════════╗$(NC)"
+	@echo "$(RED)║  REAL LIVE MODE ACTIVATED                                    ║$(NC)"
+	@echo "$(RED)║  All four engines will start with REAL capital               ║$(NC)"
+	@echo "$(RED)║  Real money will be at risk!                                 ║$(NC)"
+	@echo "$(RED)╚══════════════════════════════════════════════════════════════╝$(NC)"
+	$(PYTHON_VENV) main.py --mode live --prod
+
+run-core-live: verify-live ## Run only CORE-HODL engine (real live)
+	@echo "$(RED)Starting CORE-HODL engine in REAL LIVE mode...$(NC)"
+	$(PYTHON_VENV) main.py --mode live --prod --engine core
+
+run-trend-live: verify-live ## Run only TREND engine (real live)
+	@echo "$(RED)Starting TREND engine in REAL LIVE mode...$(NC)"
+	$(PYTHON_VENV) main.py --mode live --prod --engine trend
+
+run-funding-live: verify-live ## Run only FUNDING engine (real live)
+	@echo "$(RED)Starting FUNDING engine in REAL LIVE mode...$(NC)"
+	$(PYTHON_VENV) main.py --mode live --prod --engine funding
+
+run-tactical-live: verify-live ## Run only TACTICAL engine (real live)
+	@echo "$(RED)Starting TACTICAL engine in REAL LIVE mode...$(NC)"
+	$(PYTHON_VENV) main.py --mode live --prod --engine tactical
 
 # ------------------------------------------------------------------------------
 # Maintenance

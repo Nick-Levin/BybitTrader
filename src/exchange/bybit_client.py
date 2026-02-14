@@ -132,6 +132,9 @@ class PybitDemoClient:
         self.apiKey = api_key  # For compatibility
         self.secret = api_secret
         
+        # Add options dict for compatibility with ccxt-style access
+        self.options = {'defaultType': 'spot'}
+        
     async def fetch_balance(self, params=None):
         """Fetch wallet balance (async wrapper)."""
         loop = asyncio.get_event_loop()
@@ -171,12 +174,243 @@ class PybitDemoClient:
                     
         return balances
     
+    async def fetch_ohlcv(self, symbol: str, timeframe: str = '1h', limit: int = 100, params=None):
+        """
+        Fetch OHLCV data using ccxt (public data, no auth required).
+        
+        This is needed for strategy analysis. We use ccxt for market data
+        since pybit doesn't provide OHLCV in the same format.
+        """
+        # Create a temporary ccxt exchange for market data only
+        if not hasattr(self, '_market_exchange'):
+            self._market_exchange = ccxt.bybit({
+                'enableRateLimit': True,
+                'options': {'defaultType': 'spot'}
+            })
+        
+        # Convert symbol format if needed (BTCUSDT -> BTC/USDT)
+        ccxt_symbol = symbol.replace('USDT', '/USDT') if '/' not in symbol else symbol
+        
+        try:
+            ohlcv = await self._market_exchange.fetch_ohlcv(
+                ccxt_symbol, 
+                timeframe=timeframe, 
+                limit=limit,
+                params=params or {}
+            )
+            return ohlcv
+        except Exception as e:
+            logger.warning("pybit_demo.ohlcv_error", symbol=symbol, error=str(e))
+            return []
+    
+    async def fetch_ticker(self, symbol: str, params=None):
+        """Fetch ticker data using ccxt."""
+        if not hasattr(self, '_market_exchange'):
+            self._market_exchange = ccxt.bybit({
+                'enableRateLimit': True,
+                'options': {'defaultType': 'spot'}
+            })
+        
+        ccxt_symbol = symbol.replace('USDT', '/USDT') if '/' not in symbol else symbol
+        
+        try:
+            ticker = await self._market_exchange.fetch_ticker(ccxt_symbol, params=params or {})
+            return ticker
+        except Exception as e:
+            logger.warning("pybit_demo.ticker_error", symbol=symbol, error=str(e))
+            return {}
+    
+    async def create_order(self, symbol: str, side, type=None, order_type=None, amount=None, price=None, params=None, **kwargs):
+        """Create a real order on Bybit Demo Trading using pybit.
+        
+        This method accepts both ccxt-style parameters (symbol, type, side, amount) and
+        our internal parameter names (order_type).
+        """
+        from src.core.models import Order, OrderSide, OrderType, OrderStatus
+        from decimal import Decimal
+        
+        # Handle ccxt-style 'type' parameter (order type: market/limit)
+        if order_type is None and type is not None:
+            order_type = type
+        
+        # Handle amount as various types
+        if isinstance(amount, (int, float)):
+            amount = Decimal(str(amount))
+        elif amount is None:
+            amount = Decimal("0")
+        
+        # Handle price
+        if price is not None and not isinstance(price, Decimal):
+            price = Decimal(str(price)) if price else None
+        
+        loop = asyncio.get_event_loop()
+        params = params or {}
+        
+        # Convert symbol format for Bybit API (BTCUSDT -> BTCUSDT, but need to handle category)
+        category = "spot"  # Default to spot for demo trading
+        if params and params.get('market_type'):
+            category = params['market_type']
+        
+        # Convert side and order_type to strings if needed
+        side_str = side.upper() if isinstance(side, str) else side.value.upper()
+        order_type_str = order_type.upper() if isinstance(order_type, str) else order_type.value.upper()
+        
+        # Prepare order parameters
+        order_params = {
+            'category': category,
+            'symbol': symbol,
+            'side': side_str,
+            'orderType': order_type_str,
+        }
+        
+        # For spot market buy orders, use quoteOrderQty (USDT amount) if available
+        # This is more reliable than calculating base quantity
+        if category == 'spot' and side_str == 'BUY' and order_type_str == 'MARKET':
+            # Estimate USDT value (amount * estimated price)
+            # For simplicity, we use the qty parameter with proper precision
+            pass  # Fall through to qty-based logic
+        
+        # Round quantity to appropriate precision for the symbol
+        # Bybit spot precision: BTC=6, ETH=5, most others=4-6
+        if 'BTC' in symbol:
+            qty_str = str(amount.quantize(Decimal("0.000001")))
+        elif 'ETH' in symbol:
+            qty_str = str(amount.quantize(Decimal("0.00001")))
+        else:
+            qty_str = str(amount.quantize(Decimal("0.0001")))
+        order_params['qty'] = qty_str
+        
+        # Add price for limit orders
+        if price and order_type_str != 'MARKET':
+            order_params['price'] = str(price)
+        
+        logger.info("pybit_demo.order_params", symbol=symbol, side=side_str, 
+                   order_type=order_type_str, qty=qty_str, category=category)
+        
+        try:
+            # Place the order using pybit
+            result = await loop.run_in_executor(
+                self._executor,
+                lambda: self._client.place_order(**order_params)
+            )
+            
+            if result.get('retCode') == 0:
+                order_data = result.get('result', {})
+                logger.info(
+                    "pybit_demo.order_placed",
+                    symbol=symbol,
+                    side=side,
+                    order_type=order_type,
+                    amount=str(amount),
+                    order_id=order_data.get('orderId')
+                )
+                
+                # Create Order object
+                order = Order(
+                    symbol=symbol,
+                    side=OrderSide(side.lower()) if isinstance(side, str) else side,
+                    order_type=OrderType(order_type.lower()) if isinstance(order_type, str) else order_type,
+                    amount=amount,
+                    price=price,
+                    exchange_order_id=order_data.get('orderId'),
+                    status=OrderStatus.PENDING,
+                    filled_amount=Decimal("0")
+                )
+                return order
+            else:
+                error_msg = result.get('retMsg', 'Unknown error')
+                logger.error("pybit_demo.order_failed", error=error_msg, symbol=symbol)
+                raise Exception(f"Bybit API error: {error_msg}")
+                
+        except Exception as e:
+            logger.error("pybit_demo.order_error", symbol=symbol, error=str(e))
+            raise
+    
     async def load_markets(self):
-        """Load markets (no-op for pybit, returns empty dict for compatibility)."""
-        return {}
+        """Load markets using ccxt."""
+        if not hasattr(self, '_market_exchange'):
+            self._market_exchange = ccxt.bybit({
+                'enableRateLimit': True,
+                'options': {'defaultType': 'spot'}
+            })
+        return await self._market_exchange.load_markets()
+    
+    async def fetch_order(self, order_id: str, symbol: str, params=None):
+        """Fetch order status using pybit.
+        
+        Args:
+            order_id: The exchange order ID
+            symbol: Trading pair symbol
+            params: Additional parameters
+            
+        Returns:
+            Order info in ccxt-like format
+        """
+        loop = asyncio.get_event_loop()
+        
+        # Determine category from symbol or params
+        category = params.get('category', 'spot') if params else 'spot'
+        
+        try:
+            result = await loop.run_in_executor(
+                self._executor,
+                lambda: self._client.get_order_history(
+                    category=category,
+                    symbol=symbol,
+                    orderId=order_id
+                )
+            )
+            
+            if result.get('retCode') == 0:
+                orders = result.get('result', {}).get('list', [])
+                if orders:
+                    order = orders[0]
+                    # Convert to ccxt-like format
+                    return {
+                        'id': order.get('orderId'),
+                        'symbol': order.get('symbol'),
+                        'status': self._map_order_status(order.get('orderStatus')),
+                        'side': order.get('side', '').lower(),
+                        'type': order.get('orderType', '').lower(),
+                        'amount': float(order.get('qty', 0)),
+                        'filled': float(order.get('cumExecQty', 0)),
+                        'remaining': float(order.get('leavesQty', 0)),
+                        'price': float(order.get('price', 0)) if order.get('price') else None,
+                        'average': float(order.get('avgPrice', 0)) if order.get('avgPrice') else None,
+                        'info': order
+                    }
+                else:
+                    raise ccxt.OrderNotFound(f"Order {order_id} not found")
+            else:
+                error_msg = result.get('retMsg', 'Unknown error')
+                raise Exception(f"Bybit API error: {error_msg}")
+                
+        except ccxt.OrderNotFound:
+            raise
+        except Exception as e:
+            logger.error("pybit_demo.fetch_order_error", order_id=order_id, symbol=symbol, error=str(e))
+            raise
+    
+    def _map_order_status(self, status: str) -> str:
+        """Map Bybit order status to ccxt format."""
+        status_map = {
+            'Created': 'open',
+            'New': 'open',
+            'Rejected': 'rejected',
+            'PartiallyFilled': 'open',
+            'PartiallyFilledCanceled': 'canceled',
+            'Filled': 'closed',
+            'Cancelled': 'canceled',
+            'Untriggered': 'open',
+            'Triggered': 'open',
+            'Deactivated': 'canceled',
+        }
+        return status_map.get(status, 'unknown')
     
     async def close(self):
         """Close the client."""
+        if hasattr(self, '_market_exchange'):
+            await self._market_exchange.close()
         self._executor.shutdown(wait=False)
 
 
@@ -668,6 +902,14 @@ class ByBitClient:
                 params=order_params
             )
             
+            # Handle case where exchange returns an Order object directly (PybitDemoClient)
+            if isinstance(result, Order):
+                # Update metadata with subaccount info
+                result.metadata = result.metadata or {}
+                result.metadata['subaccount'] = subaccount
+                return result
+            
+            # Handle ccxt-style dictionary response
             order = Order(
                 symbol=symbol,
                 side=OrderSide(side),
@@ -969,6 +1211,17 @@ class ByBitClient:
             raise
     
     @with_retry()
+    async def get_ticker(self, symbol: str) -> Dict[str, Any]:
+        """Get current ticker data for a symbol (alias for fetch_ticker).
+        
+        Args:
+            symbol: Trading pair (e.g., 'BTCUSDT')
+            
+        Returns:
+            Dictionary with last price, bid, ask, volume, timestamp
+        """
+        return await self.fetch_ticker(symbol)
+    
     async def fetch_ticker(self, symbol: str) -> Dict[str, Any]:
         """Get current ticker data for a symbol.
         

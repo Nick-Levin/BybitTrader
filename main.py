@@ -43,6 +43,7 @@ from src.core.config import (
     database_config, notification_config
 )
 from src.core.engine import TradingEngine
+from src.core.models import EngineType
 from src.exchange.bybit_client import ByBitClient, SubAccountType
 from src.risk.risk_manager import RiskManager
 from src.storage.database import Database
@@ -118,37 +119,40 @@ class TradingBot:
         logger.info("bot.risk_manager_initialized")
         
         # Initialize strategies based on engine filter
-        strategies = await self._initialize_strategies()
+        strategies_by_engine = await self._initialize_strategies()
         
-        if not strategies:
+        if not strategies_by_engine:
             logger.warning("bot.no_strategies_loaded", engine_filter=self.engine_filter)
         else:
+            total_strategies = sum(len(s) for s in strategies_by_engine.values())
             logger.info(
                 "bot.strategies_loaded",
-                count=len(strategies),
-                names=[s.name for s in strategies]
+                count=total_strategies,
+                engines=list(strategies_by_engine.keys()),
+                names=[s.name for strategies in strategies_by_engine.values() for s in strategies]
             )
         
-        # Create trading engine (orchestrator)
-        # Note: strategies are managed separately, pass empty dict to engine
+        # Create trading engine (orchestrator) with strategies organized by engine
         self.engine = TradingEngine(
             exchange=self.exchange,
             risk_manager=self.risk_manager,
             database=self.database,
-            strategies={}
+            strategies=strategies_by_engine
         )
         
         self._initialized = True
         logger.info("bot.initialized")
     
-    async def _initialize_strategies(self) -> List:
+    async def _initialize_strategies(self) -> Dict[EngineType, List]:
         """
         Initialize strategies based on engine filter.
         
         Returns:
-            List of strategy instances
+            Dict mapping EngineType to list of strategy instances
         """
-        strategies = []
+        from src.core.models import EngineType
+        
+        strategies_by_engine: Dict[EngineType, List] = {}
         
         # CORE-HODL Engine (DCAStrategy)
         if self.engine_filter in ('core', 'all'):
@@ -159,7 +163,7 @@ class TradingBot:
                     interval_hours=engine_config.core_hodl.dca_interval_hours,
                     amount_usdt=Decimal(str(engine_config.core_hodl.dca_amount_usdt))
                 )
-                strategies.append(dca)
+                strategies_by_engine[EngineType.CORE_HODL] = [dca]
                 logger.info(
                     "bot.core_hodl_loaded",
                     symbols=dca.symbols,
@@ -178,7 +182,7 @@ class TradingBot:
                     grid_levels=engine_config.tactical.grid_levels,
                     grid_spacing_pct=engine_config.tactical.grid_spacing_pct
                 )
-                strategies.append(grid)
+                strategies_by_engine[EngineType.TACTICAL] = [grid]
                 logger.info(
                     "bot.tactical_loaded",
                     symbols=grid.symbols,
@@ -193,12 +197,6 @@ class TradingBot:
             if engine_config.trend.enabled:
                 logger.info("bot.trend_enabled_but_not_implemented")
                 # TODO: Implement TrendStrategy
-                # trend = TrendStrategy(
-                #     name="TREND",
-                #     symbols=engine_config.trading_mode.perp_symbols,
-                #     ...
-                # )
-                # strategies.append(trend)
             else:
                 logger.info("bot.trend_disabled")
         
@@ -207,16 +205,10 @@ class TradingBot:
             if engine_config.funding.enabled:
                 logger.info("bot.funding_enabled_but_not_implemented")
                 # TODO: Implement FundingStrategy
-                # funding = FundingStrategy(
-                #     name="FUNDING",
-                #     symbols=engine_config.trading_mode.default_symbols,
-                #     ...
-                # )
-                # strategies.append(funding)
             else:
                 logger.info("bot.funding_disabled")
         
-        return strategies
+        return strategies_by_engine
     
     async def run(self):
         """Run the main trading loop."""
@@ -592,6 +584,9 @@ async def main():
     if args.mode:
         engine_config.legacy.trading_mode = args.mode
         engine_config.trading_mode.trading_mode = args.mode
+        # Also update trading_config which is used by bybit_client
+        from src.core.config import trading_config
+        trading_config.trading_mode = args.mode
         print(f"✓ Trading mode set to: {args.mode.upper()}")
     
     # Check configuration
