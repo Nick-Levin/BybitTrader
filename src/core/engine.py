@@ -182,6 +182,9 @@ class TradingEngine:
         # Load state from database
         await self._load_state()
         
+        # Sync positions from exchange (catches positions not in database)
+        await self._sync_positions_from_exchange()
+        
         logger.info(
             "trading_engine.initialized",
             total_balance=str(self.portfolio.total_balance),
@@ -339,6 +342,22 @@ class TradingEngine:
                 continue
             
             try:
+                # Update portfolio state for CORE-HODL strategy
+                if hasattr(strategy, 'update_portfolio_state'):
+                    # Calculate position values for each symbol
+                    position_values = {}
+                    for symbol in strategy.symbols:
+                        position = self.engine_positions.get(engine_type, {}).get(symbol)
+                        if position:
+                            position_values[symbol] = position.amount * position.entry_price
+                        else:
+                            position_values[symbol] = Decimal("0")
+                    
+                    strategy.update_portfolio_state(
+                        portfolio_value=self.portfolio.total_balance if self.portfolio else Decimal("0"),
+                        positions=position_values
+                    )
+                
                 # Get relevant data for this strategy
                 strategy_data = {
                     s: engine_data.get(s, []) for s in strategy.symbols
@@ -861,7 +880,29 @@ class TradingEngine:
         symbol = order.symbol
         engine_positions = self.engine_positions[engine_type]
         
-        fill_price = order.average_price or order.price or Decimal("0")
+        # Get fill price - use average_price first, then price, then fetch current market price
+        fill_price = order.average_price or order.price
+        if not fill_price or fill_price <= 0:
+            # Fallback: fetch current market price from exchange
+            try:
+                ticker = await self.exchange.get_ticker(symbol)
+                fill_price = Decimal(str(ticker['last']))
+                logger.warning(
+                    "trading_engine.using_market_price_fallback",
+                    symbol=symbol,
+                    order_id=order.id,
+                    fill_price=str(fill_price)
+                )
+            except Exception as e:
+                logger.error(
+                    "trading_engine.failed_to_get_fill_price",
+                    symbol=symbol,
+                    order_id=order.id,
+                    error=str(e)
+                )
+                # Cannot create/update position without a valid price
+                return
+        
         fill_amount = order.filled_amount or order.amount
         
         if symbol not in engine_positions:
@@ -899,7 +940,30 @@ class TradingEngine:
             return
         
         position = engine_positions[symbol]
-        fill_price = order.average_price or order.price or Decimal("0")
+        
+        # Get fill price - use average_price first, then price, then fetch current market price
+        fill_price = order.average_price or order.price
+        if not fill_price or fill_price <= 0:
+            # Fallback: fetch current market price from exchange
+            try:
+                ticker = await self.exchange.get_ticker(symbol)
+                fill_price = Decimal(str(ticker['last']))
+                logger.warning(
+                    "trading_engine.using_market_price_fallback",
+                    symbol=symbol,
+                    order_id=order.id,
+                    fill_price=str(fill_price)
+                )
+            except Exception as e:
+                logger.error(
+                    "trading_engine.failed_to_get_fill_price",
+                    symbol=symbol,
+                    order_id=order.id,
+                    error=str(e)
+                )
+                # Cannot calculate PnL without a valid price - use position's entry price
+                # (this will result in 0 PnL, which is safer than using 0)
+                fill_price = position.entry_price
         
         # Calculate PnL
         realized_pnl = position.calculate_unrealized_pnl(fill_price)
@@ -1039,6 +1103,131 @@ class TradingEngine:
                        engines=len(self.engine_states))
         except Exception as e:
             logger.error("trading_engine.state_load_error", error=str(e))
+    
+    async def _sync_positions_from_exchange(self):
+        """
+        Sync positions from Bybit exchange to catch positions not in database.
+        
+        This is critical when:
+        - Database was cleared but positions exist on exchange
+        - Positions were created manually or by another instance
+        - Restarting after a crash
+        
+        Also updates strategy's last_purchase time from order history.
+        """
+        logger.info("trading_engine.syncing_positions_from_exchange")
+        
+        try:
+            # Get balance for CORE_HODL subaccount
+            balance = await self.exchange.fetch_balance('CORE_HODL')
+            
+            for symbol, amount in balance.get('total', {}).items():
+                # Skip USDT (quote currency) and zero balances
+                if symbol == 'USDT' or not amount or amount <= 0:
+                    continue
+                
+                # Convert amount to Decimal immediately
+                amount_decimal = Decimal(str(amount))
+                
+                # Convert symbol format if needed (BTC -> BTCUSDT)
+                trading_symbol = f"{symbol}USDT"
+                
+                # Check if we already track this position
+                if trading_symbol in self.engine_positions[EngineType.CORE_HODL]:
+                    logger.debug("trading_engine.position_already_tracked", 
+                               symbol=trading_symbol, amount=amount)
+                    continue
+                
+                # Get current price to calculate position value
+                try:
+                    ticker = await self.exchange.get_ticker(trading_symbol)
+                    current_price = Decimal(str(ticker.get('last', 0)))
+                    
+                    if current_price <= 0:
+                        logger.warning("trading_engine.sync_no_price", symbol=trading_symbol)
+                        continue
+                    
+                    # Calculate position value for dust check
+                    position_value = amount_decimal * current_price
+                    
+                    # Skip dust amounts (less than $1.0 worth)
+                    if position_value < Decimal("1.0"):
+                        logger.debug("trading_engine.skipping_dust_amount",
+                                   symbol=trading_symbol,
+                                   amount=str(amount_decimal),
+                                   value_usd=str(position_value))
+                        continue
+                    
+                    # Create position record
+                    from src.core.models import Position, PositionSide
+                    position = Position(
+                        symbol=trading_symbol,
+                        side=PositionSide.LONG,
+                        entry_price=current_price,  # Use current price as estimate
+                        amount=amount_decimal,
+                        opened_at=datetime.utcnow(),
+                        metadata={'engine_type': 'CORE_HODL', 'synced_from_exchange': True}
+                    )
+                    
+                    # Add to engine positions
+                    self.engine_positions[EngineType.CORE_HODL][trading_symbol] = position
+                    self.positions[trading_symbol] = position
+                    
+                    # Save to database
+                    await self.database.save_position(position)
+                    
+                    logger.info("trading_engine.position_synced",
+                               symbol=trading_symbol,
+                               amount=str(amount_decimal),
+                               value=float(position_value))
+                    
+                except Exception as e:
+                    logger.warning("trading_engine.sync_position_error", 
+                                 symbol=trading_symbol, error=str(e))
+            
+            # Try to get last order time for DCA strategies
+            await self._sync_last_purchase_from_orders()
+            
+        except Exception as e:
+            logger.error("trading_engine.sync_positions_error", error=str(e))
+    
+    async def _sync_last_purchase_from_orders(self):
+        """
+        Fetch recent orders from exchange to set last_purchase times for DCA strategies.
+        
+        This prevents immediate re-buying when positions already exist.
+        Only sets last_purchase if there are actual positions synced from exchange.
+        """
+        try:
+            # Check if we have any positions synced from exchange
+            core_hodl_positions = self.engine_positions.get(EngineType.CORE_HODL, {})
+            
+            if not core_hodl_positions:
+                # No positions exist - this is a fresh start
+                # Don't set last_purchase, let strategy generate initial buy signals
+                logger.info("trading_engine.no_positions_fresh_start",
+                           message="No existing positions, allowing immediate buy signals")
+                return
+            
+            # We have existing positions - set last_purchase to prevent immediate rebuy
+            for engine_type, strategies in self.engines.items():
+                for strategy in strategies:
+                    if hasattr(strategy, 'last_purchase'):
+                        # Set last_purchase to now so DCA waits proper interval
+                        from datetime import datetime
+                        for symbol in strategy.symbols:
+                            if symbol not in strategy.last_purchase:
+                                # Only set if not already set (from database)
+                                # Only set if we have a position for this symbol
+                                if symbol in core_hodl_positions:
+                                    strategy.last_purchase[symbol] = datetime.utcnow()
+                                    logger.info("trading_engine.last_purchase_synced",
+                                              symbol=symbol, 
+                                              strategy=strategy.name,
+                                              next_purchase_in_hours=strategy.interval_hours)
+            
+        except Exception as e:
+            logger.warning("trading_engine.sync_orders_error", error=str(e))
     
     async def _save_state(self):
         """Save state to database."""

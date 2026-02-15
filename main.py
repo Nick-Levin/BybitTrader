@@ -168,7 +168,7 @@ class TradingBot:
                     "bot.core_hodl_loaded",
                     symbols=dca.symbols,
                     interval=dca.interval_hours,
-                    amount=str(dca.amount_usdt)
+                    amount=str(dca.base_amount_usdt)
                 )
             else:
                 logger.info("bot.core_hodl_disabled")
@@ -560,6 +560,11 @@ async def main():
         action="store_true",
         help="Run backtest mode"
     )
+    parser.add_argument(
+        "--reset-emergency",
+        action="store_true",
+        help="Reset emergency stop (USE WITH CAUTION)"
+    )
     
     args = parser.parse_args()
     
@@ -631,6 +636,45 @@ async def main():
         await db.initialize()
         print("✓ Database initialized successfully")
         await db.close()
+        return
+    
+    # Handle --reset-emergency
+    if args.reset_emergency:
+        print("\n🚨 EMERGENCY STOP RESET")
+        print("=" * 60)
+        print("WARNING: This will reset the emergency stop state!")
+        print("Only do this if you understand why it was triggered.")
+        print("=" * 60)
+        
+        confirm = input("\nType 'RESET' to confirm: ")
+        if confirm != "RESET":
+            print("Aborted.")
+            return
+        
+        # Initialize minimal components to reset
+        db = Database()
+        await db.initialize()
+        
+        # Load and reset risk manager state
+        from src.risk.risk_manager import RiskManager
+        risk_manager = RiskManager()
+        
+        # Get portfolio for initialization
+        from src.exchange.bybit_client import ByBitClient
+        exchange = ByBitClient()
+        await exchange.initialize(testnet=engine_config.bybit.testnet)
+        portfolio = await exchange.get_balance()
+        
+        await risk_manager.initialize(portfolio)
+        
+        # Reset emergency stop
+        risk_manager.reset_emergency_stop(authorized_by="manual_cli")
+        
+        print("✓ Emergency stop has been reset")
+        print("You can now restart the bot normally.")
+        
+        await db.close()
+        await exchange.close()
         return
     
     # Handle --backtest

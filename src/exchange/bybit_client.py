@@ -270,22 +270,48 @@ class PybitDemoClient:
             # For simplicity, we use the qty parameter with proper precision
             pass  # Fall through to qty-based logic
         
-        # Round quantity to appropriate precision for the symbol
-        # Bybit spot precision: BTC=6, ETH=5, most others=4-6
-        if 'BTC' in symbol:
-            qty_str = str(amount.quantize(Decimal("0.000001")))
-        elif 'ETH' in symbol:
-            qty_str = str(amount.quantize(Decimal("0.00001")))
+        # For spot market BUY orders, use quote amount (USDT) directly
+        # This avoids precision issues with base quantity
+        if category == 'spot' and side_str == 'BUY' and order_type_str == 'MARKET':
+            # Get the USDT value from amount * price
+            ticker = await self.fetch_ticker(symbol)
+            current_price = Decimal(str(ticker.get('last', 0)))
+            if current_price > 0:
+                quote_amount = (amount * current_price).quantize(Decimal("0.01"))
+                # Bybit minimum order value is 1 USDT, use at least 5 USDT to be safe
+                if quote_amount >= Decimal("5"):
+                    order_params['marketUnit'] = 'quoteCoin'
+                    order_params['qty'] = str(quote_amount)
+                    logger.info("pybit_demo.quote_order", symbol=symbol, 
+                               quote_amount=str(quote_amount), category=category)
+                else:
+                    # Fall back to base quantity if quote amount too small
+                    qty_str = str(amount.quantize(Decimal("0.000001")))
+                    order_params['qty'] = qty_str
+                    logger.info("pybit_demo.base_order", symbol=symbol, 
+                               qty=qty_str, reason="quote_too_small")
+            else:
+                # Fallback to base quantity
+                qty_str = str(amount.quantize(Decimal("0.000001")))
+                order_params['qty'] = qty_str
         else:
-            qty_str = str(amount.quantize(Decimal("0.0001")))
-        order_params['qty'] = qty_str
+            # Round quantity to appropriate precision for the symbol
+            # Bybit spot precision: BTC=6, ETH=5, most others=4-6
+            if 'BTC' in symbol:
+                qty_str = str(amount.quantize(Decimal("0.000001")))
+            elif 'ETH' in symbol:
+                qty_str = str(amount.quantize(Decimal("0.00001")))
+            else:
+                qty_str = str(amount.quantize(Decimal("0.0001")))
+            order_params['qty'] = qty_str
         
         # Add price for limit orders
         if price and order_type_str != 'MARKET':
             order_params['price'] = str(price)
         
         logger.info("pybit_demo.order_params", symbol=symbol, side=side_str, 
-                   order_type=order_type_str, qty=qty_str, category=category)
+                   order_type=order_type_str, qty=order_params.get('qty'), 
+                   market_unit=order_params.get('marketUnit'), category=category)
         
         try:
             # Place the order using pybit
@@ -532,12 +558,26 @@ class ByBitClient:
             task = self._initialize_subaccount(subaccount_type, testnet)
             init_tasks.append(task)
         
-        await asyncio.gather(*init_tasks, return_exceptions=True)
+        results = await asyncio.gather(*init_tasks, return_exceptions=True)
+        
+        # Check for exceptions - re-raise the first one
+        for subaccount_type, result in zip(subaccounts, results):
+            if isinstance(result, Exception):
+                logger.error(
+                    "bybit_client.subaccount_init_failed",
+                    subaccount=subaccount_type.value,
+                    error=str(result),
+                    error_type=type(result).__name__
+                )
+                # Re-raise the original exception to preserve error type
+                raise result
+        
         self._initialized = True
         
         logger.info(
             "bybit_client.initialized",
             subaccounts=[s.value for s in subaccounts],
+            initialized=list(self.exchanges.keys()),
             testnet=testnet,
             trading_mode=trading_config.trading_mode
         )
@@ -738,6 +778,43 @@ class ByBitClient:
                 "bybit_client.balance_error",
                 subaccount=subaccount,
                 asset=asset,
+                error=str(e)
+            )
+            raise
+    
+    @with_retry()
+    async def fetch_balance(self, subaccount: str = "MASTER") -> Dict[str, Any]:
+        """
+        Fetch raw wallet balance for a subaccount (ccxt-like format).
+        
+        Args:
+            subaccount: Subaccount name (e.g., 'CORE_HODL', 'TREND')
+            
+        Returns:
+            Dictionary with 'total', 'free', 'used' keys containing coin balances
+        """
+        exchange = self._get_exchange(subaccount)
+        
+        try:
+            if isinstance(exchange, PybitDemoClient):
+                # PybitDemoClient has its own fetch_balance
+                balance = await exchange.fetch_balance()
+            else:
+                # ccxt exchange
+                balance = await exchange.fetch_balance()
+            
+            logger.debug(
+                "bybit_client.raw_balance_fetched",
+                subaccount=subaccount,
+                coins=list(balance.get('total', {}).keys())
+            )
+            
+            return balance
+            
+        except Exception as e:
+            logger.error(
+                "bybit_client.fetch_balance_error",
+                subaccount=subaccount,
                 error=str(e)
             )
             raise

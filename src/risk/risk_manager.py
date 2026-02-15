@@ -463,26 +463,42 @@ class RiskManager:
         portfolio: Portfolio,
         current_positions: Dict[str, Position]
     ) -> RiskCheck:
-        """Check if daily loss limit has been reached."""
-        daily_loss_pct = self._calculate_daily_loss_pct(portfolio)
-        max_daily_loss = Decimal(str(trading_config.max_daily_loss_pct))
+        """Check if daily loss limit has been reached.
         
-        if daily_loss_pct >= max_daily_loss:
+        Daily loss is calculated as a percentage (e.g., 2.0 means 2% loss).
+        The limit from config is stored as a decimal (e.g., 0.02 means 2%),
+        so we convert it to percentage for comparison.
+        """
+        daily_loss_pct = self._calculate_daily_loss_pct(portfolio)
+        # Config stores as decimal (0.02 = 2%), convert to percentage (2.0)
+        max_daily_loss_pct = Decimal(str(trading_config.max_daily_loss_pct)) * 100
+        
+        # Validate daily_starting_balance is properly initialized
+        if not self.daily_starting_balance or self.daily_starting_balance <= 0:
+            logger.warning(
+                "risk_manager.daily_loss_check_skipped",
+                reason="daily_starting_balance not initialized",
+                balance=str(self.daily_starting_balance)
+            )
+            return RiskCheck(passed=True)
+        
+        # Emergency stop at 100% of limit
+        if daily_loss_pct >= max_daily_loss_pct:
             self.trigger_emergency_stop(f"Daily loss limit reached: {daily_loss_pct:.2f}%")
             return RiskCheck(
                 passed=False,
-                reason=f"Daily loss limit reached: {daily_loss_pct:.2f}% (max: {max_daily_loss}%)",
+                reason=f"Daily loss limit reached: {daily_loss_pct:.2f}% (max: {max_daily_loss_pct:.2f}%)",
                 risk_level="critical",
-                metadata={'daily_loss_pct': float(daily_loss_pct), 'limit': float(max_daily_loss)}
+                metadata={'daily_loss_pct': float(daily_loss_pct), 'limit': float(max_daily_loss_pct)}
             )
         
         # Warning at 80% of limit
-        if daily_loss_pct >= max_daily_loss * Decimal("0.8"):
+        if daily_loss_pct >= max_daily_loss_pct * Decimal("0.8"):
             return RiskCheck(
                 passed=True,
                 reason=f"Daily loss at {daily_loss_pct:.2f}% - approaching limit",
                 risk_level="warning",
-                metadata={'daily_loss_pct': float(daily_loss_pct)}
+                metadata={'daily_loss_pct': float(daily_loss_pct), 'limit': float(max_daily_loss_pct)}
             )
         
         return RiskCheck(passed=True)
@@ -493,26 +509,42 @@ class RiskManager:
         portfolio: Portfolio,
         current_positions: Dict[str, Position]
     ) -> RiskCheck:
-        """Check if weekly loss limit has been reached."""
-        weekly_loss_pct = self._calculate_weekly_loss_pct(portfolio)
-        max_weekly_loss = Decimal(str(trading_config.max_weekly_loss_pct))
+        """Check if weekly loss limit has been reached.
         
-        if weekly_loss_pct >= max_weekly_loss:
+        Weekly loss is calculated as a percentage (e.g., 5.0 means 5% loss).
+        The limit from config is stored as a decimal (e.g., 0.05 means 5%),
+        so we convert it to percentage for comparison.
+        """
+        weekly_loss_pct = self._calculate_weekly_loss_pct(portfolio)
+        # Config stores as decimal (0.05 = 5%), convert to percentage (5.0)
+        max_weekly_loss_pct = Decimal(str(trading_config.max_weekly_loss_pct)) * 100
+        
+        # Validate weekly_starting_balance is properly initialized
+        if not self.weekly_starting_balance or self.weekly_starting_balance <= 0:
+            logger.warning(
+                "risk_manager.weekly_loss_check_skipped",
+                reason="weekly_starting_balance not initialized",
+                balance=str(self.weekly_starting_balance)
+            )
+            return RiskCheck(passed=True)
+        
+        # Emergency stop at 100% of limit
+        if weekly_loss_pct >= max_weekly_loss_pct:
             self.trigger_emergency_stop(f"Weekly loss limit reached: {weekly_loss_pct:.2f}%")
             return RiskCheck(
                 passed=False,
-                reason=f"Weekly loss limit reached: {weekly_loss_pct:.2f}% (max: {max_weekly_loss}%)",
+                reason=f"Weekly loss limit reached: {weekly_loss_pct:.2f}% (max: {max_weekly_loss_pct:.2f}%)",
                 risk_level="critical",
-                metadata={'weekly_loss_pct': float(weekly_loss_pct), 'limit': float(max_weekly_loss)}
+                metadata={'weekly_loss_pct': float(weekly_loss_pct), 'limit': float(max_weekly_loss_pct)}
             )
         
         # Warning at 80% of limit
-        if weekly_loss_pct >= max_weekly_loss * Decimal("0.8"):
+        if weekly_loss_pct >= max_weekly_loss_pct * Decimal("0.8"):
             return RiskCheck(
                 passed=True,
                 reason=f"Weekly loss at {weekly_loss_pct:.2f}% - approaching limit",
                 risk_level="warning",
-                metadata={'weekly_loss_pct': float(weekly_loss_pct)}
+                metadata={'weekly_loss_pct': float(weekly_loss_pct), 'limit': float(max_weekly_loss_pct)}
             )
         
         return RiskCheck(passed=True)
@@ -1098,21 +1130,43 @@ class RiskManager:
     # === Private Helper Methods ===
     
     def _calculate_daily_loss_pct(self, portfolio: Portfolio) -> Decimal:
-        """Calculate current daily loss percentage."""
-        if not self.daily_starting_balance or self.daily_starting_balance == 0:
+        """Calculate current daily loss percentage.
+        
+        Returns a percentage value (e.g., 2.0 means 2% loss).
+        Positive value indicates loss, 0 means no loss or profit.
+        """
+        if not self.daily_starting_balance or self.daily_starting_balance <= 0:
             return Decimal("0")
+        
+        # Skip if portfolio balance is not properly initialized
+        if not portfolio.total_balance or portfolio.total_balance <= 0:
+            return Decimal("0")
+        
         current_pnl = portfolio.total_balance - self.daily_starting_balance
         if current_pnl < 0:
-            return abs(current_pnl) / self.daily_starting_balance * 100
+            # Calculate percentage loss (e.g., 0.12 for 0.12% loss)
+            loss_pct = abs(current_pnl) / self.daily_starting_balance * 100
+            return loss_pct
         return Decimal("0")
     
     def _calculate_weekly_loss_pct(self, portfolio: Portfolio) -> Decimal:
-        """Calculate current weekly loss percentage."""
-        if not self.weekly_starting_balance or self.weekly_starting_balance == 0:
+        """Calculate current weekly loss percentage.
+        
+        Returns a percentage value (e.g., 5.0 means 5% loss).
+        Positive value indicates loss, 0 means no loss or profit.
+        """
+        if not self.weekly_starting_balance or self.weekly_starting_balance <= 0:
             return Decimal("0")
+        
+        # Skip if portfolio balance is not properly initialized
+        if not portfolio.total_balance or portfolio.total_balance <= 0:
+            return Decimal("0")
+        
         current_pnl = portfolio.total_balance - self.weekly_starting_balance
         if current_pnl < 0:
-            return abs(current_pnl) / self.weekly_starting_balance * 100
+            # Calculate percentage loss (e.g., 0.12 for 0.12% loss)
+            loss_pct = abs(current_pnl) / self.weekly_starting_balance * 100
+            return loss_pct
         return Decimal("0")
     
     def _calculate_drawdown(self, portfolio: Portfolio) -> Optional[Decimal]:

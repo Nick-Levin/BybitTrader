@@ -154,8 +154,11 @@ class TestTradingModeConfig:
         config = TradingModeConfig()
         
         assert config.trading_mode == "paper"
-        assert config.default_symbols == ["BTCUSDT", "ETHUSDT"]
-        assert config.perp_symbols == ["BTC-PERP", "ETH-PERP"]
+        # TOP 10 Bybit coins: BTC, ETH, SOL, XRP, BNB, DOGE, ADA, TRX, AVAX, LINK
+        expected_symbols = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT", "BNBUSDT", 
+                           "DOGEUSDT", "ADAUSDT", "TRXUSDT", "AVAXUSDT", "LINKUSDT"]
+        assert config.default_symbols == expected_symbols
+        assert config.perp_symbols == expected_symbols  # Bybit V5 uses USDT format for both
     
     def test_trading_mode_validation(self):
         """Test trading mode validation."""
@@ -538,7 +541,10 @@ class TestTradingConfig:
         config = TradingConfig()
         
         assert config.trading_mode == "paper"
-        assert config.default_symbols == ["BTCUSDT", "ETHUSDT"]
+        # TOP 10 Bybit coins: BTC, ETH, SOL, XRP, BNB, DOGE, ADA, TRX, AVAX, LINK
+        expected_symbols = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT", "BNBUSDT", 
+                           "DOGEUSDT", "ADAUSDT", "TRXUSDT", "AVAXUSDT", "LINKUSDT"]
+        assert config.default_symbols == expected_symbols
         # Note: Config uses decimal representation (0.05 = 5%)
         assert config.max_position_pct == 0.05  # 5% as decimal
         assert config.max_daily_loss_pct == 0.02  # 2% as decimal

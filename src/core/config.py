@@ -115,11 +115,11 @@ class TradingModeConfig(BaseSettings):
     
     # Default trading symbols (stored as comma-separated string, parsed to list)
     default_symbols_str: str = Field(
-        default="BTCUSDT,ETHUSDT", 
+        default="BTCUSDT,ETHUSDT,SOLUSDT,XRPUSDT,BNBUSDT,DOGEUSDT,ADAUSDT,TRXUSDT,AVAXUSDT,LINKUSDT", 
         env="DEFAULT_SYMBOLS"
     )
     perp_symbols_str: str = Field(
-        default="BTC-PERP,ETH-PERP", 
+        default="BTCUSDT,ETHUSDT,SOLUSDT,XRPUSDT,BNBUSDT,DOGEUSDT,ADAUSDT,TRXUSDT,AVAXUSDT,LINKUSDT", 
         env="PERP_SYMBOLS"
     )
     
@@ -295,6 +295,38 @@ class CoreHodlConfig(BaseSettings):
     # DCA settings
     dca_interval_hours: int = Field(default=168, env="CORE_DCA_INTERVAL_HOURS")  # Weekly
     dca_amount_usdt: float = Field(default=100.0, env="CORE_DCA_AMOUNT_USDT")
+    
+    # Deployment settings
+    max_deployment_weeks: int = Field(default=12, env="CORE_MAX_DEPLOYMENT_WEEKS")
+    """Maximum weeks to deploy initial capital."""
+    
+    # Allocation ratios (must sum to 1.0)
+    btc_allocation: float = Field(default=0.667, env="CORE_BTC_ALLOCATION")
+    """BTC percentage within crypto allocation (67%)."""
+    
+    eth_allocation: float = Field(default=0.333, env="CORE_ETH_ALLOCATION")
+    """ETH percentage within crypto allocation (33%)."""
+    
+    # Order size limits
+    max_order_value: float = Field(default=10000.0, env="CORE_MAX_ORDER_VALUE")
+    """Maximum single order value in USDT."""
+    
+    min_order_value: float = Field(default=5.0, env="CORE_MIN_ORDER_VALUE")
+    """Minimum single order value in USDT."""
+    
+    @field_validator("btc_allocation", "eth_allocation")
+    @classmethod
+    def validate_allocation_range(cls, v):
+        """Validate that individual allocations are between 0 and 1."""
+        if v < 0 or v > 1:
+            raise ValueError("Allocation must be between 0 and 1")
+        return v
+    
+    @computed_field
+    @property
+    def total_allocation(self) -> float:
+        """Check that BTC + ETH allocation sums to approximately 1.0."""
+        return self.btc_allocation + self.eth_allocation
 
 
 # =============================================================================
@@ -637,7 +669,7 @@ class TradingConfig(BaseSettings):
     
     # Default trading pairs (stored as string, accessed as list via property)
     default_symbols_str: str = Field(
-        default="BTCUSDT,ETHUSDT", 
+        default="BTCUSDT,ETHUSDT,SOLUSDT,XRPUSDT,BNBUSDT,DOGEUSDT,ADAUSDT,TRXUSDT,AVAXUSDT,LINKUSDT", 
         env="DEFAULT_SYMBOLS"
     )
     
